@@ -29,6 +29,13 @@ AI-powered customer feedback analysis with actionable insights for Product Manag
 - Sentiment trends over periods
 - Period-over-period delta indicators
 
+### Root Cause Analysis (CrewAI Agents)
+- Multi-agent AI system for deeper insights
+- Upload product documentation and release notes
+- Automatic correlation of feedback with releases
+- Documentation gap identification
+- Executive report with prioritized recommendations
+
 ### Export Options
 - Tagged data as CSV
 - Structured JSON export
@@ -120,10 +127,10 @@ Get your Groq API key at [console.groq.com](https://console.groq.com)
 ### Groq (Cloud)
 | Model | Best For |
 |-------|----------|
-| deepseek-r1-distill-llama-70b | Highest quality reasoning |
-| deepseek-r1-distill-qwen-32b | Good balance of speed/quality |
-| llama-3.3-70b-versatile | General purpose |
-| llama-3.1-8b-instant | Fast, lower quality |
+| llama-3.3-70b-versatile | Best quality, recommended default |
+| llama-3.1-8b-instant | Fast, cost-effective |
+| openai/gpt-oss-120b | OpenAI's flagship open model |
+| openai/gpt-oss-20b | OpenAI's smaller open model |
 
 ### Ollama (Local)
 Any model installed locally (llama3, mistral, etc.)
@@ -135,6 +142,11 @@ Any model installed locally (llama3, mistral, etc.)
 ├── config.py                # Configuration loader
 ├── requirements.txt         # Python dependencies
 ├── setup.sh                 # Setup and run script
+├── agents/                  # CrewAI multi-agent system
+│   ├── __init__.py
+│   ├── crew_setup.py        # Agent definitions
+│   ├── tools.py             # ChromaDB retrieval tools
+│   └── document_processor.py # PDF/MD parsing & indexing
 ├── .streamlit/
 │   └── secrets.toml.example # Secrets template for deployment
 ├── deprecated/              # Legacy app versions
@@ -159,6 +171,7 @@ This project was originally created in June 2024 for analyzing customer feedback
 - Executive summaries with AI recommendations
 - Trend analysis across time periods
 - Export functionality
+- **CrewAI multi-agent orchestration** for root cause analysis with RAG (Feb 2026)
 
 ## License
 

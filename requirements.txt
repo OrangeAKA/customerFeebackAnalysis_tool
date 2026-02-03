@@ -5,3 +5,11 @@ python-dotenv
 openpyxl
 groq
 plotly
+# CrewAI Agent Orchestration
+crewai
+langchain-groq
+# RAG / Vector Store
+chromadb
+sentence-transformers
+# Document Parsing
+pypdf

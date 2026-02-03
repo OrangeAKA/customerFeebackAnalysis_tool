@@ -19,6 +19,13 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
+# Try to import CrewAI agents
+try:
+    from agents import DocumentProcessor, FeedbackAnalysisCrew
+    CREWAI_AVAILABLE = True
+except ImportError:
+    CREWAI_AVAILABLE = False
+
 
 # ============================================================================
 # LLM Functions
@@ -53,7 +60,7 @@ def llm_chat(messages, provider="ollama", model=None, json_mode=False):
         if not api_key:
             raise ValueError("GROQ_API_KEY not found in environment. Please set it in your .env file.")
         
-        model = model or "llama-3.1-70b-versatile"
+        model = model or "llama-3.3-70b-versatile"
         client = Groq(api_key=api_key)
         
         kwargs = {"model": model, "messages": messages}
@@ -601,17 +608,15 @@ def main():
         st.sidebar.info("🖥️ Using local Ollama. Ensure Ollama is running.")
     else:
         groq_models = [
-            "deepseek-r1-distill-llama-70b",
-            "deepseek-r1-distill-qwen-32b",
             "llama-3.3-70b-versatile",
-            "llama-3.1-70b-versatile",
             "llama-3.1-8b-instant",
-            "mixtral-8x7b-32768",
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
         ]
         model = st.sidebar.selectbox(
             "Groq Model",
             groq_models,
-            help="DeepSeek models recommended for best analysis quality"
+            help="Llama 3.3 70B recommended for best analysis quality"
         )
         st.sidebar.success("☁️ Using Groq cloud API")
     
@@ -769,12 +774,18 @@ def main():
                     summary = generate_executive_summary(tagged_df)
                     
                     # Create tabs for different views
-                    tab1, tab2, tab3, tab4 = st.tabs([
+                    tab_names = [
                         "📊 Executive Summary",
                         "📈 Visual Dashboard", 
                         "📋 Tagged Data",
                         "📥 Export"
-                    ])
+                    ]
+                    if CREWAI_AVAILABLE:
+                        tab_names.append("🔍 Root Cause Analysis")
+                    
+                    tabs = st.tabs(tab_names)
+                    tab1, tab2, tab3, tab4 = tabs[:4]
+                    tab5 = tabs[4] if len(tabs) > 4 else None
                     
                     with tab1:
                         display_executive_summary(summary, tagged_df, provider, model)
@@ -853,6 +864,235 @@ def main():
                         st.markdown("---")
                         st.markdown("### Report Preview")
                         st.markdown(report_md)
+                    
+                    # Root Cause Analysis Tab (if CrewAI available)
+                    if tab5 is not None:
+                        with tab5:
+                            display_root_cause_analysis(
+                                tagged_df, summary, provider, model, text_column
+                            )
+
+
+def display_root_cause_analysis(tagged_df, summary, provider, model, text_column):
+    """Display the Root Cause Analysis tab with CrewAI agents."""
+    st.subheader("🔍 Root Cause Analysis")
+    st.markdown(
+        "Use AI agents to correlate feedback with product documentation "
+        "and release notes for deeper insights."
+    )
+    
+    # Check if Groq is being used (required for CrewAI)
+    if provider != "groq":
+        st.warning(
+            "⚠️ Root Cause Analysis requires Groq (cloud) provider. "
+            "Please switch to Groq in the sidebar to use this feature."
+        )
+        return
+    
+    # Check for API key
+    groq_api_key = config.GROQ_API_KEY
+    if not groq_api_key:
+        st.error("❌ Groq API key not found. Please configure it in secrets or .env file.")
+        return
+    
+    st.markdown("---")
+    
+    # Document upload section
+    st.markdown("### 📁 Upload Context Documents (Optional)")
+    st.markdown(
+        "Upload product documentation and release notes to enable deeper analysis. "
+        "Supported formats: PDF, Markdown (.md), Text (.txt)"
+    )
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Product Documentation**")
+        doc_files = st.file_uploader(
+            "Upload product docs",
+            type=["pdf", "md", "txt"],
+            accept_multiple_files=True,
+            key="doc_files",
+            help="Upload product documentation, user guides, or feature specs"
+        )
+        if doc_files:
+            st.success(f"✓ {len(doc_files)} doc(s) uploaded")
+    
+    with col2:
+        st.markdown("**Release Notes / Changelog**")
+        release_files = st.file_uploader(
+            "Upload release notes",
+            type=["pdf", "md", "txt"],
+            accept_multiple_files=True,
+            key="release_files",
+            help="Upload release notes, changelogs, or version history"
+        )
+        if release_files:
+            st.success(f"✓ {len(release_files)} release note(s) uploaded")
+    
+    st.markdown("---")
+    
+    # Analysis options
+    st.markdown("### ⚙️ Analysis Options")
+    
+    quick_mode = st.checkbox(
+        "Quick Analysis Mode",
+        value=True,
+        help="Use single-agent analysis (faster, fewer API calls). Uncheck for full multi-agent analysis."
+    )
+    
+    st.markdown("---")
+    
+    # Run analysis button
+    if st.button("🚀 Run Root Cause Analysis", type="primary", use_container_width=True):
+        run_root_cause_analysis(
+            tagged_df, summary, provider, model, text_column,
+            doc_files, release_files, quick_mode, groq_api_key
+        )
+
+
+def run_root_cause_analysis(
+    tagged_df, summary, provider, model, text_column,
+    doc_files, release_files, quick_mode, groq_api_key
+):
+    """Execute the root cause analysis with CrewAI agents."""
+    
+    # Initialize document processor
+    doc_processor = DocumentProcessor()
+    
+    # Process documents if uploaded
+    docs_collection = None
+    releases_collection = None
+    
+    with st.spinner("Processing documents..."):
+        if doc_files:
+            try:
+                docs_collection = doc_processor.index_documents(
+                    doc_files, "product_docs"
+                )
+                stats = doc_processor.get_document_stats(docs_collection)
+                st.info(f"📚 Indexed {stats['total_chunks']} chunks from product docs")
+            except Exception as e:
+                st.warning(f"Could not process docs: {str(e)}")
+        
+        if release_files:
+            try:
+                releases_collection = doc_processor.index_documents(
+                    release_files, "release_notes"
+                )
+                stats = doc_processor.get_document_stats(releases_collection)
+                st.info(f"📋 Indexed {stats['total_chunks']} chunks from release notes")
+            except Exception as e:
+                st.warning(f"Could not process release notes: {str(e)}")
+    
+    # Prepare feedback context
+    top_issues = tagged_df[tagged_df['_priority'] == 'high']['_summary'].tolist()[:10]
+    if not top_issues:
+        top_issues = tagged_df['_summary'].tolist()[:10]
+    
+    category_breakdown = tagged_df['_category'].value_counts().to_dict()
+    
+    # Create feedback summary text
+    feedback_summary = f"""
+Total feedback items: {summary['total_items']}
+Positive sentiment: {summary['positive_pct']:.1f}%
+Negative sentiment: {summary['negative_pct']:.1f}%
+Neutral sentiment: {summary['neutral_pct']:.1f}%
+High priority items: {summary['high_priority_count']}
+"""
+    
+    # Initialize CrewAI
+    crew = FeedbackAnalysisCrew(
+        groq_api_key=groq_api_key,
+        model=model,
+        docs_collection=docs_collection,
+        releases_collection=releases_collection
+    )
+    
+    if quick_mode:
+        # Quick single-agent analysis
+        with st.spinner("🤖 Running quick analysis..."):
+            try:
+                sample_feedback = "\n".join([
+                    f"- {row[text_column][:200]}" 
+                    for _, row in tagged_df.head(20).iterrows()
+                ])
+                result = crew.quick_analyze(sample_feedback)
+                
+                st.markdown("### 📊 Quick Analysis Results")
+                st.markdown(result)
+                
+            except Exception as e:
+                st.error(f"Analysis failed: {str(e)}")
+                if "rate" in str(e).lower():
+                    st.info("💡 Tip: Groq has rate limits. Wait a moment and try again.")
+    else:
+        # Full multi-agent analysis
+        st.markdown("### 🤖 Agent Execution Progress")
+        
+        # Progress containers
+        progress_container = st.container()
+        agents = ["Feedback Analyst", "Documentation Specialist", "Release Analyst", "Insights Synthesizer"]
+        agent_status = {agent: "pending" for agent in agents}
+        
+        # Create progress display
+        with progress_container:
+            progress_cols = st.columns(4)
+            status_placeholders = {}
+            for i, agent in enumerate(agents):
+                with progress_cols[i]:
+                    status_placeholders[agent] = st.empty()
+                    status_placeholders[agent].markdown(f"⏳ **{agent}**\n\nPending...")
+        
+        def update_progress(progress):
+            """Callback to update agent progress in UI."""
+            agent_status[progress.agent_name] = progress.status
+            if progress.agent_name in status_placeholders:
+                if progress.status == "running":
+                    status_placeholders[progress.agent_name].markdown(
+                        f"🔄 **{progress.agent_name}**\n\n{progress.message or 'Running...'}"
+                    )
+                elif progress.status == "completed":
+                    status_placeholders[progress.agent_name].markdown(
+                        f"✅ **{progress.agent_name}**\n\nComplete"
+                    )
+                elif progress.status == "error":
+                    status_placeholders[progress.agent_name].markdown(
+                        f"❌ **{progress.agent_name}**\n\n{progress.message}"
+                    )
+        
+        crew.progress_callback = update_progress
+        
+        with st.spinner("🤖 Running full agent analysis (this may take 1-2 minutes)..."):
+            try:
+                results = crew.analyze(
+                    feedback_summary=feedback_summary,
+                    top_issues=top_issues,
+                    category_breakdown=category_breakdown
+                )
+                
+                if results['success']:
+                    st.markdown("---")
+                    st.markdown("### 📋 Executive Report")
+                    st.markdown(results['final_report'])
+                    
+                    # Download option
+                    st.download_button(
+                        "📥 Download Report",
+                        results['final_report'],
+                        "root_cause_analysis.md",
+                        "text/markdown",
+                        use_container_width=True
+                    )
+                else:
+                    st.error(f"Analysis failed: {results['error']}")
+                    if "rate" in str(results['error']).lower():
+                        st.info("💡 Tip: Groq has rate limits (30 req/min). Wait a moment and try again, or use Quick Mode.")
+                        
+            except Exception as e:
+                st.error(f"Analysis failed: {str(e)}")
+                if "rate" in str(e).lower():
+                    st.info("💡 Tip: Groq has rate limits. Try Quick Mode or wait a moment.")
 
 
 if __name__ == "__main__":
