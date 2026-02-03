@@ -1,48 +1,43 @@
 # Customer Feedback Analysis Tool
 
-**AI-powered feedback analysis platform with multi-agent orchestration for actionable product insights.**
+A tool I built to help product teams make sense of customer feedback at scale. Instead of manually reading through thousands of app reviews, support tickets, and NPS comments, you upload a CSV and get back structured insights with sentiment, categories, and priority tags.
 
-Built to demonstrate how modern AI systems can transform unstructured customer feedback into structured, actionable intelligence—going beyond what's possible with manual analysis or simple ChatGPT queries.
-
----
-
-## The Problem
-
-Product teams drown in customer feedback. App reviews, support tickets, NPS comments, social mentions—thousands of unstructured text inputs that contain critical insights about what users love, hate, and need.
-
-**Traditional approaches fail at scale:**
-- Manual analysis is slow and inconsistent
-- Keyword searches miss nuance and context
-- Generic LLM queries (ChatGPT/Claude) require copy-pasting and produce inconsistent formats
-
-**This tool solves that** by providing a structured, repeatable workflow that:
-- Processes thousands of feedback items automatically
-- Tags each item with category, sentiment, priority, and summary
-- Visualizes patterns for quick decision-making
-- Correlates feedback with product releases (multi-agent analysis)
-- Exports structured data for downstream tools (Jira, BI dashboards)
+Started this project in June 2024 when I was frustrated with how long it took to analyze feedback data. Copying and pasting into ChatGPT worked for small batches, but anything over a few hundred items became a nightmare. So I built something better.
 
 ---
 
-## Why This Tool vs. ChatGPT/Claude Directly?
+## What Problem Does This Solve?
 
-| Aspect | ChatGPT/Claude | This Tool |
-|--------|---------------|-----------|
-| **Bulk Processing** | Copy-paste one at a time | Upload CSV, process thousands |
-| **Consistent Output** | Varies between queries | Structured JSON schema every time |
-| **Trend Analysis** | Manual comparison | Automated period-over-period |
-| **Export Format** | Plain text | CSV, JSON, Markdown reports |
-| **Visualization** | None | Interactive dashboards |
-| **Reproducibility** | None (different each time) | Same workflow, comparable results |
-| **Context Correlation** | Manual | Multi-agent with RAG (docs + releases) |
+Product teams get feedback from everywhere: app stores, support tickets, NPS surveys, social media. Most of it is unstructured text that takes forever to go through manually.
 
-**The key insight:** LLMs are powerful, but raw chat interfaces aren't optimized for structured, repeatable analytical workflows. This tool wraps LLM capabilities in a product-oriented UX.
+The usual approaches don't scale well:
+- Reading everything by hand is slow and you end up inconsistent
+- Keyword searches miss context and nuance
+- Using ChatGPT or Claude means copy-pasting one item at a time, and you get different output formats every time
+
+With this tool, you upload your feedback file, pick the text column, and it processes everything automatically. Each item gets tagged with category, sentiment, priority, and a one-line summary. You can filter, visualize, and export the results.
 
 ---
 
-## System Architecture
+## How Is This Different From Just Using ChatGPT?
 
-### High-Level Data Flow
+| | ChatGPT/Claude | This Tool |
+|---|---|---|
+| Bulk Processing | Copy-paste one at a time | Upload CSV, process thousands |
+| Output Format | Different every time | Same JSON structure always |
+| Trend Comparison | Manual | Automated period-over-period |
+| Export | Plain text | CSV, JSON, Markdown reports |
+| Visualization | None | Interactive dashboards |
+| Reproducibility | Results vary | Same workflow, comparable results |
+| Context | Manual | Can correlate with docs and releases |
+
+The point isn't that LLMs aren't good enough. They're great. But a raw chat interface isn't designed for structured, repeatable analysis workflows. This wraps the LLM in a UX that makes sense for the actual job.
+
+---
+
+## Architecture
+
+### How Data Flows Through the System
 
 ```mermaid
 flowchart LR
@@ -83,9 +78,9 @@ flowchart LR
     Agents --> Report
 ```
 
-### Multi-Agent Architecture (CrewAI)
+### Multi-Agent System (CrewAI)
 
-The Root Cause Analysis feature uses a multi-agent system where specialized AI agents collaborate to produce deeper insights:
+There's also a "Root Cause Analysis" feature that uses multiple AI agents working together. You can upload product docs and release notes, and the agents will try to correlate complaints with specific releases or find documentation gaps.
 
 ```mermaid
 flowchart TB
@@ -139,95 +134,84 @@ flowchart TB
     Synthesizer --> Output
 ```
 
-#### Agent Roles
+#### What Each Agent Does
 
-| Agent | Responsibility | Tools |
-|-------|---------------|-------|
-| **Feedback Analyst** | Categorize feedback, identify themes, surface critical issues | LLM reasoning |
-| **Documentation Specialist** | Search product docs for relevant context, identify documentation gaps | ChromaDB retrieval |
-| **Release Correlator** | Cross-reference complaints with release notes, identify regressions | ChromaDB retrieval |
-| **Insights Synthesizer** | Combine findings into executive report with prioritized recommendations | LLM reasoning |
+| Agent | Job | Tools |
+|---|---|---|
+| Feedback Analyst | Categorizes feedback, finds themes, flags critical issues | LLM reasoning |
+| Documentation Specialist | Searches product docs for relevant context, spots doc gaps | ChromaDB retrieval |
+| Release Correlator | Matches complaints to release notes, identifies regressions | ChromaDB retrieval |
+| Insights Synthesizer | Pulls everything together into a report with recommendations | LLM reasoning |
 
 ---
 
 ## Features
 
-### For Product Managers & Operations
+**For PMs and Ops folks:**
+- Dashboard with key metrics: sentiment breakdown, priority distribution, top categories
+- AI-generated recommendations based on patterns in the feedback
+- Trend analysis to compare feedback across time periods
+- Markdown exports you can share with leadership
 
-- **Executive Dashboard**: Key metrics at a glance—sentiment breakdown, priority distribution, top categories
-- **Actionable Recommendations**: AI-generated next steps based on feedback patterns
-- **Trend Analysis**: Compare feedback across time periods, spot emerging issues
-- **Export to Stakeholders**: Markdown reports suitable for leadership updates
-
-### For Technical Teams
-
-- **Row-Level Tagging**: Each feedback item gets structured metadata (category, sentiment, priority, summary)
-- **Filterable Data Table**: Drill down by any tag combination
-- **JSON Export**: Structured data ready for Jira integration, database storage, or further analysis
-- **Multi-Agent RAG**: Correlate feedback with product documentation and release notes
+**For technical teams:**
+- Every feedback item gets structured metadata (category, sentiment, priority, summary)
+- Filterable data table to drill down by any tag
+- JSON export for Jira integration, databases, or further analysis
+- Multi-agent RAG to correlate feedback with docs and releases
 
 ---
 
-## Performance Optimizations
+## Performance: Batching and Sampling
 
-### Batching & Sampling: Trade-offs Explained
+When I first tested this on a 29K row dataset, it was going to take something like 16 hours. That's because the naive approach is one API call per row, and Groq's free tier has rate limits.
 
-Processing large datasets (10K+ rows) through LLM APIs presents challenges. This tool implements two optimizations:
+So I added two optimizations:
 
-#### Batch Processing
+### Batching
 
-Instead of one API call per feedback item, we send **15 items per call**.
+Instead of sending one feedback item per API call, the tool sends 15 at a time. This cuts API calls by roughly 15x.
 
 ```
-Before: 29,000 rows = 29,000 API calls = ~16 hours (at 30 req/min)
-After:  29,000 rows = ~1,966 API calls = ~2-3 hours
+Before: 29,000 rows = 29,000 API calls = ~16 hours
+After:  29,000 rows = ~1,966 API calls = 2-3 hours
 ```
 
-**Trade-off**: Slight reduction in per-item accuracy (~5-10% on edge cases) because the LLM processes multiple items simultaneously. For statistical analysis and trend detection, this is acceptable.
+The tradeoff is slightly lower accuracy on edge cases (maybe 5-10%) because the LLM is processing multiple items at once. For trend analysis and statistical insights, this is fine.
 
-#### Sampling
+### Sampling
 
-For very large datasets, analyze a representative sample instead of all rows.
+For really large datasets, you can analyze a random sample instead of everything.
 
-| Sample Size | API Calls | Time Estimate | Statistical Validity |
-|-------------|-----------|---------------|---------------------|
-| 500 rows | ~34 | 2-3 min | Good for trends |
-| 1,000 rows | ~67 | 4-5 min | Recommended |
-| 2,000 rows | ~134 | 8-10 min | High confidence |
-| All rows | varies | varies | Maximum accuracy |
+| Sample Size | API Calls | Time | When to Use |
+|---|---|---|---|
+| 500 rows | ~34 | 2-3 min | Quick pulse check |
+| 1,000 rows | ~67 | 4-5 min | Monthly analysis (recommended) |
+| 2,000 rows | ~134 | 8-10 min | Higher confidence |
+| All rows | varies | varies | Critical decisions |
 
-**Trade-off**: Sampling introduces variance—you might miss rare edge cases. For most product decisions, a 1,000-row sample provides sufficient signal.
-
-### When to Use What
-
-| Scenario | Recommendation |
-|----------|---------------|
-| Quick pulse check | 500 sample, batch processing |
-| Monthly analysis | 1,000-2,000 sample, batch processing |
-| Critical decision | All rows, accept longer processing time |
-| Per-ticket routing | Single-row processing (production setup) |
+The tradeoff is you might miss rare edge cases. But for most product decisions, a 1,000-row sample gives you enough signal.
 
 ---
 
-## Demo vs. Production Deployment
+## Demo vs Production: Important Differences
 
-This repository includes a Streamlit Cloud deployment optimized for demonstration. Production deployments would differ significantly:
+This repo is set up for Streamlit Cloud, which is great for demos but not how you'd run this in production.
 
-| Aspect | Streamlit Cloud (Demo) | Production (AWS/On-Prem) |
-|--------|------------------------|--------------------------|
-| **LLM** | Groq API (cloud) | Self-hosted Ollama/vLLM on EC2/EKS |
-| **Rate Limits** | 30-1000 req/min (Groq tier) | None (your infrastructure) |
-| **Batching Required?** | Yes (API constraints) | No (can process row-by-row) |
-| **Sampling Required?** | Yes (speed/cost) | No (can process all data) |
-| **Vector Store** | In-memory ChromaDB (stateless) | Persistent Pinecone/Weaviate/pgvector |
-| **Data Persistence** | None (resets each session) | Database for analysis history |
-| **Scaling** | Single Streamlit instance | Horizontal scaling with K8s |
-| **Cost Model** | Per-token API pricing | Fixed infrastructure cost |
-| **Data Privacy** | Data sent to Groq API | 100% on-prem, data never leaves |
+| | Streamlit Cloud (Demo) | Production (AWS/On-Prem) |
+|---|---|---|
+| LLM | Groq API (cloud) | Self-hosted Ollama or vLLM |
+| Rate Limits | 30-1000 req/min depending on tier | None, limited only by your hardware |
+| Batching Needed? | Yes, because of API constraints | No, can process row by row |
+| Sampling Needed? | Yes, for speed and cost | No, can process everything |
+| Vector Store | In-memory ChromaDB (resets each session) | Persistent Pinecone/Weaviate/pgvector |
+| Data Persistence | None | Database for analysis history |
+| Scaling | Single instance | Horizontal scaling with K8s |
+| Cost | Per-token API pricing | Fixed infrastructure cost |
+| Privacy | Data goes to Groq API | Data never leaves your servers |
 
-**Key Insight**: The batching and sampling in this demo are **optimizations for API constraints**, not architectural requirements. In a production deployment with self-hosted models (e.g., Llama 3 on AWS GPU instances), you would typically process every row individually for maximum accuracy.
+**Important**: The batching and sampling are optimizations for API constraints, not architectural requirements. If you deploy this on-prem with self-hosted models (like Llama 3 on AWS GPU instances), you'd probably process every row individually for maximum accuracy.
 
-### Production Architecture (Conceptual)
+### What Production Would Look Like
 
 ```mermaid
 flowchart TB
@@ -269,53 +253,53 @@ flowchart TB
 
 ---
 
-## Technical Stack
+## Tech Stack
 
-| Component | Technology | Why |
-|-----------|------------|-----|
-| **UI Framework** | Streamlit | Rapid prototyping, easy deployment |
-| **LLM (Cloud)** | Groq API | Fastest inference (500+ tokens/sec), open-source models |
-| **LLM (Local)** | Ollama | Privacy-first, runs on your machine |
-| **Agent Framework** | CrewAI | Multi-agent orchestration with role-based agents |
-| **Vector Store** | ChromaDB | Open-source, in-memory, Apache 2.0 license |
-| **Embeddings** | sentence-transformers | Free, runs locally |
-| **Visualization** | Plotly | Interactive charts |
-| **Document Parsing** | pypdf | PDF text extraction |
+| Component | Technology | Why I Chose It |
+|---|---|---|
+| UI | Streamlit | Fast to prototype, easy to deploy |
+| LLM (Cloud) | Groq API | Fastest inference I found (500+ tokens/sec), runs open-source models |
+| LLM (Local) | Ollama | Privacy-first option, runs on your machine |
+| Agent Framework | CrewAI | Good multi-agent orchestration with role-based agents |
+| Vector Store | ChromaDB | Open-source, in-memory, Apache 2.0 license |
+| Embeddings | sentence-transformers | Free, runs locally |
+| Charts | Plotly | Interactive, looks nice |
+| PDF Parsing | pypdf | Gets the job done |
 
-### Supported Models
+### Models
 
-| Model | Parameters | Speed | Best For |
-|-------|------------|-------|----------|
-| `llama-3.3-70b-versatile` | 70B | 280 tps | Best quality (recommended) |
-| `llama-3.1-8b-instant` | 8B | 560 tps | Fast analysis |
-| `openai/gpt-oss-120b` | 120B | 500 tps | Complex reasoning |
-| `openai/gpt-oss-20b` | 20B | 1000 tps | Maximum speed |
+| Model | Size | Speed | Notes |
+|---|---|---|---|
+| llama-3.3-70b-versatile | 70B | 280 tps | Best quality, recommended |
+| llama-3.1-8b-instant | 8B | 560 tps | Faster, good for large batches |
+| openai/gpt-oss-120b | 120B | 500 tps | Complex reasoning tasks |
+| openai/gpt-oss-20b | 20B | 1000 tps | Maximum speed |
 
 ---
 
 ## Getting Started
 
-### Quick Start (Streamlit Cloud)
+### Streamlit Cloud
 
 The app is deployed at: [Your Streamlit Cloud URL]
 
-### Local Setup
+### Running Locally
 
 ```bash
-# Clone the repository
+# Clone the repo
 git clone https://github.com/OrangeAKA/customerFeebackAnalysis_tool.git
 cd customerFeebackAnalysis_tool
 
-# Create environment file
+# Set up environment
 cp .env.example .env
 # Edit .env and add your GROQ_API_KEY
 
-# Run setup script
+# Run it
 chmod +x setup.sh
 ./setup.sh
 ```
 
-### Manual Setup
+Or manually:
 
 ```bash
 python3 -m venv venv
@@ -326,9 +310,9 @@ streamlit run app_llama3v2.py
 
 ### Configuration
 
-Get your Groq API key at [console.groq.com](https://console.groq.com)
+Get a Groq API key at [console.groq.com](https://console.groq.com)
 
-For Streamlit Cloud deployment, add secrets in Settings > Secrets:
+For Streamlit Cloud, add secrets in Settings > Secrets:
 ```toml
 APP_PASSWORD = "your_password"
 GROQ_API_KEY = "your_groq_api_key"
@@ -339,63 +323,56 @@ GROQ_API_KEY = "your_groq_api_key"
 ## Project Structure
 
 ```
-├── app_llama3v2.py           # Main Streamlit application
-├── config.py                 # Configuration & secrets loader
-├── requirements.txt          # Python dependencies
-├── setup.sh                  # Setup and run script
+├── app_llama3v2.py           # Main Streamlit app
+├── config.py                 # Config and secrets loader
+├── requirements.txt          # Dependencies
+├── setup.sh                  # Setup script
 ├── agents/                   # CrewAI multi-agent system
 │   ├── __init__.py
-│   ├── crew_setup.py         # Agent definitions & orchestration
+│   ├── crew_setup.py         # Agent definitions
 │   ├── tools.py              # ChromaDB retrieval tools
-│   └── document_processor.py # PDF/MD parsing & chunking
+│   └── document_processor.py # PDF/MD parsing
 ├── .streamlit/
 │   └── secrets.toml.example  # Secrets template
-├── deprecated/               # Legacy implementations
+├── deprecated/               # Old implementations
 │   └── README.md
 └── README.md
 ```
 
 ---
 
-## Project Evolution
+## How This Project Evolved
 
-This project demonstrates iterative product development:
+| Version | When | What Changed |
+|---|---|---|
+| v1.0 | June 2024 | First version, local Ollama only |
+| v2.0 | Feb 2026 | Added Groq cloud, row-level tagging |
+| v2.1 | Feb 2026 | Visual dashboards, executive summaries |
+| v2.2 | Feb 2026 | Trend analysis across time periods |
+| v2.3 | Feb 2026 | CrewAI multi-agent root cause analysis |
+| v2.4 | Feb 2026 | Batch processing and sampling |
 
-| Phase | Date | What Changed |
-|-------|------|--------------|
-| **v1.0** | June 2024 | Initial prototype with local Ollama |
-| **v2.0** | Feb 2026 | Added Groq cloud support, row-level tagging |
-| **v2.1** | Feb 2026 | Visual dashboards, executive summaries |
-| **v2.2** | Feb 2026 | Trend analysis across time periods |
-| **v2.3** | Feb 2026 | CrewAI multi-agent root cause analysis |
-| **v2.4** | Feb 2026 | Batch processing & sampling optimizations |
-
-Each iteration addressed real user needs:
-- v1 → "I want to analyze feedback without sending data to OpenAI"
-- v2 → "Local models are slow, can I use cloud?"
-- v2.1 → "I need visuals for my leadership deck"
-- v2.2 → "How do I compare this month vs. last month?"
-- v2.3 → "Can it tell me which release caused these complaints?"
-- v2.4 → "Processing 30K rows takes forever"
+Each version came from real frustrations:
+- v1: "I don't want to send customer data to OpenAI"
+- v2: "Local models are too slow"
+- v2.1: "I need charts for my leadership deck"
+- v2.2: "How do I compare this month to last month?"
+- v2.3: "Can it figure out which release broke things?"
+- v2.4: "Processing 30K rows is taking forever"
 
 ---
 
-## Future Enhancements
+## What's Next
 
-Potential next iterations:
-
-- **Jira/Linear Integration**: Auto-create tickets from high-priority feedback
-- **Slack Alerts**: Notify channels when sentiment drops
-- **Fine-tuned Classifiers**: Train dedicated models for even faster classification
-- **Real-time Streaming**: Process feedback as it arrives (Kafka/webhooks)
-- **Multi-language Support**: Analyze feedback in any language
+Ideas I might add:
+- Jira/Linear integration to auto-create tickets from high-priority items
+- Slack alerts when sentiment drops
+- Fine-tuned classifiers for faster processing
+- Real-time streaming via Kafka
+- Multi-language support
 
 ---
 
 ## License
 
 MIT
-
----
-
-*Built to demonstrate AI product management skills—understanding trade-offs, system architecture, and user-centric iteration.*
