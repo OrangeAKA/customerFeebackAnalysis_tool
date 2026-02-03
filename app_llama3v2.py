@@ -157,26 +157,197 @@ Return ONLY the JSON object, no other text."""
         }
 
 
-def tag_feedback_rows(df, text_column, analysis_type, provider, model, progress_callback=None):
-    """Tag each row in the dataframe with category, sentiment, and priority."""
-    tagged_data = []
-    total_rows = len(df)
+def tag_batch_rows(texts, indices, analysis_type, provider, model):
+    """
+    Tag multiple feedback rows in a single API call (batch processing).
     
-    for idx, row in df.iterrows():
+    Args:
+        texts: List of feedback texts to analyze
+        indices: List of original indices for these texts
+        analysis_type: Type of analysis (Customer Feedback or Support Tickets)
+        provider: LLM provider
+        model: Model name
+        
+    Returns:
+        List of tag dictionaries
+    """
+    if analysis_type == "Customer Feedback Data":
+        categories = "feature_request, bug_report, complaint, praise, question, suggestion, other"
+    else:
+        categories = "critical_bug, performance_issue, usability_issue, feature_request, documentation, other"
+    
+    # Build batch prompt
+    feedback_list = "\n".join([
+        f"[{i}] \"{text[:500]}\"" for i, text in enumerate(texts)
+    ])
+    
+    prompt = f"""Analyze each feedback item below and return a JSON array with one object per item.
+Each object must have these exact fields:
+- "id": the number in brackets [X]
+- "category": one of: {categories}
+- "sentiment": positive, negative, or neutral
+- "priority": high, medium, or low
+- "summary": one sentence summary (max 100 chars)
+
+Feedback items to analyze:
+{feedback_list}
+
+Return ONLY a JSON array like: [{{"id": 0, "category": "...", "sentiment": "...", "priority": "...", "summary": "..."}}, ...]"""
+
+    messages = [
+        {"role": "system", "content": "You are a feedback analyst. Always respond with valid JSON array only. No explanations."},
+        {"role": "user", "content": prompt}
+    ]
+    
+    try:
+        response = llm_chat(messages, provider=provider, model=model, json_mode=True)
+        
+        # Parse JSON array
+        results = json.loads(response)
+        
+        # Handle if response is wrapped in an object
+        if isinstance(results, dict):
+            # Try common wrapper keys
+            for key in ['results', 'items', 'feedback', 'data', 'analysis']:
+                if key in results and isinstance(results[key], list):
+                    results = results[key]
+                    break
+        
+        if not isinstance(results, list):
+            raise ValueError("Response is not a list")
+        
+        # Create lookup by id
+        results_by_id = {}
+        for item in results:
+            if isinstance(item, dict) and 'id' in item:
+                results_by_id[item['id']] = item
+        
+        # Return results in order, with defaults for missing items
+        output = []
+        for i, text in enumerate(texts):
+            if i in results_by_id:
+                item = results_by_id[i]
+                output.append({
+                    "category": item.get("category", "other"),
+                    "sentiment": item.get("sentiment", "neutral"),
+                    "priority": item.get("priority", "medium"),
+                    "summary": item.get("summary", text[:100])
+                })
+            else:
+                # Fallback for missing items
+                output.append({
+                    "category": "other",
+                    "sentiment": "neutral",
+                    "priority": "medium",
+                    "summary": text[:100] + "..." if len(text) > 100 else text
+                })
+        
+        return output
+        
+    except Exception as e:
+        # On failure, return defaults for all items
+        return [
+            {
+                "category": "other",
+                "sentiment": "neutral",
+                "priority": "medium",
+                "summary": text[:100] + "..." if len(text) > 100 else text
+            }
+            for text in texts
+        ]
+
+
+def tag_feedback_rows(df, text_column, analysis_type, provider, model, progress_callback=None, 
+                      batch_size=15, sample_size=None):
+    """
+    Tag each row in the dataframe with category, sentiment, and priority.
+    
+    Args:
+        df: DataFrame with feedback data
+        text_column: Column name containing feedback text
+        analysis_type: Type of analysis
+        provider: LLM provider
+        model: Model name
+        progress_callback: Optional callback for progress updates
+        batch_size: Number of rows to process per API call (default: 15)
+        sample_size: If set, randomly sample this many rows (default: None = all rows)
+    
+    Returns:
+        DataFrame with added tag columns
+    """
+    # Apply sampling if requested
+    if sample_size and sample_size < len(df):
+        # Stratified-ish sampling: ensure we get variety
+        sampled_df = df.sample(n=sample_size, random_state=42)
+        sampled_indices = sampled_df.index.tolist()
+    else:
+        sampled_df = df
+        sampled_indices = df.index.tolist()
+    
+    tagged_data = []
+    total_rows = len(sampled_df)
+    
+    # Prepare all texts and handle empty ones
+    all_texts = []
+    all_indices = []
+    empty_results = {}
+    
+    for idx in sampled_indices:
+        row = df.loc[idx]
         text = str(row[text_column])
         
-        # Skip empty rows
         if not text.strip() or text.lower() == 'nan':
-            tags = {
+            empty_results[idx] = {
                 "category": "empty",
                 "sentiment": "neutral",
                 "priority": "low",
                 "summary": "Empty feedback"
             }
         else:
-            tags = tag_single_row(text, analysis_type, provider, model)
+            all_texts.append(text)
+            all_indices.append(idx)
+    
+    # Process in batches
+    batch_results = {}
+    total_batches = (len(all_texts) + batch_size - 1) // batch_size
+    
+    for batch_num in range(total_batches):
+        start_idx = batch_num * batch_size
+        end_idx = min(start_idx + batch_size, len(all_texts))
         
-        # Combine original row with tags
+        batch_texts = all_texts[start_idx:end_idx]
+        batch_indices = all_indices[start_idx:end_idx]
+        
+        # Process batch
+        try:
+            results = tag_batch_rows(batch_texts, batch_indices, analysis_type, provider, model)
+            
+            for i, idx in enumerate(batch_indices):
+                batch_results[idx] = results[i]
+                
+        except Exception as e:
+            # Fallback to individual processing for this batch
+            for i, (text, idx) in enumerate(zip(batch_texts, batch_indices)):
+                batch_results[idx] = tag_single_row(text, analysis_type, provider, model)
+        
+        # Update progress
+        if progress_callback:
+            progress = (batch_num + 1) / total_batches
+            progress_callback(progress)
+    
+    # Combine results
+    all_results = {**empty_results, **batch_results}
+    
+    # Build output dataframe
+    for idx in sampled_indices:
+        row = df.loc[idx]
+        tags = all_results.get(idx, {
+            "category": "other",
+            "sentiment": "neutral",
+            "priority": "medium",
+            "summary": ""
+        })
+        
         tagged_row = row.to_dict()
         tagged_row.update({
             "_category": tags.get("category", "other"),
@@ -185,10 +356,6 @@ def tag_feedback_rows(df, text_column, analysis_type, provider, model, progress_
             "_summary": tags.get("summary", "")
         })
         tagged_data.append(tagged_row)
-        
-        # Update progress
-        if progress_callback:
-            progress_callback((idx + 1) / total_rows)
     
     return pd.DataFrame(tagged_data)
 
@@ -730,11 +897,55 @@ def main():
                     help="Choose the column that contains the main feedback/ticket text"
                 )
                 
+                # Large dataset options
+                sample_size = None
+                total_rows = len(df)
+                
+                if total_rows > 500:
+                    st.markdown("---")
+                    st.markdown("### ⚡ Large Dataset Options")
+                    st.info(f"Your dataset has **{total_rows:,}** rows. For faster analysis, consider using sampling.")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        use_sampling = st.checkbox(
+                            "Enable sampling (recommended for large datasets)",
+                            value=total_rows > 2000,
+                            help="Analyze a representative sample instead of all rows"
+                        )
+                    
+                    if use_sampling:
+                        with col2:
+                            sample_options = {
+                                "500 rows (~2-3 min)": 500,
+                                "1,000 rows (~4-5 min)": 1000,
+                                "2,000 rows (~8-10 min)": 2000,
+                                "5,000 rows (~20-25 min)": 5000,
+                                "All rows (not recommended)": None
+                            }
+                            sample_choice = st.selectbox(
+                                "Sample size",
+                                list(sample_options.keys()),
+                                index=1 if total_rows > 2000 else 0,
+                                help="Larger samples = more accurate but slower"
+                            )
+                            sample_size = sample_options[sample_choice]
+                        
+                        if sample_size:
+                            st.caption(f"Will analyze {sample_size:,} randomly selected rows ({sample_size/total_rows*100:.1f}% of data)")
+                            estimated_batches = (sample_size + 14) // 15
+                            st.caption(f"Estimated API calls: ~{estimated_batches} (batches of 15 rows each)")
+                    else:
+                        estimated_batches = (total_rows + 14) // 15
+                        st.warning(f"⚠️ Processing all {total_rows:,} rows will require ~{estimated_batches} API calls and may take a long time.")
+                
+                st.markdown("---")
+                
                 # Analysis button
                 if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
                     
                     # Check if already analyzed (in session state)
-                    cache_key = f"{uploaded_file.name}_{text_column}_{analysis_type}"
+                    cache_key = f"{uploaded_file.name}_{text_column}_{analysis_type}_{sample_size}"
                     
                     if cache_key in st.session_state and st.session_state[cache_key] is not None:
                         tagged_df = st.session_state[cache_key]
@@ -744,24 +955,33 @@ def main():
                         progress_bar = st.progress(0)
                         status_text = st.empty()
                         
+                        rows_to_process = sample_size if sample_size else total_rows
+                        estimated_batches = (rows_to_process + 14) // 15
+                        
                         def update_progress(pct):
                             progress_bar.progress(pct)
-                            status_text.text(f"Analyzing... {int(pct * 100)}% complete ({int(pct * len(df))}/{len(df)} rows)")
+                            batch_num = int(pct * estimated_batches)
+                            status_text.text(f"Analyzing... {int(pct * 100)}% complete (batch {batch_num}/{estimated_batches})")
                         
-                        status_text.text("Starting analysis...")
+                        status_text.text(f"Starting analysis ({rows_to_process:,} rows in ~{estimated_batches} batches)...")
                         
                         try:
                             tagged_df = tag_feedback_rows(
                                 df, text_column, analysis_type, 
                                 provider, model, 
-                                progress_callback=update_progress
+                                progress_callback=update_progress,
+                                batch_size=15,
+                                sample_size=sample_size
                             )
                             
                             # Cache results
                             st.session_state[cache_key] = tagged_df
                             
                             progress_bar.progress(1.0)
-                            status_text.text("Analysis complete!")
+                            if sample_size and sample_size < total_rows:
+                                status_text.text(f"Analysis complete! Analyzed {len(tagged_df):,} sampled rows.")
+                            else:
+                                status_text.text(f"Analysis complete! Analyzed {len(tagged_df):,} rows.")
                             
                         except Exception as e:
                             st.error(f"Analysis failed: {str(e)}")
