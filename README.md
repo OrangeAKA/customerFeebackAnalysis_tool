@@ -6,7 +6,7 @@ A tool I built to help product teams make sense of customer feedback at scale. I
 
 It will prompt you for a password. If you weren't already given one and want to try it out, DM me on X [@akrishnaakhil](https://x.com/akrishnaakhil).
 
-Started this project in June 2024 when I was frustrated with how long it took to analyze feedback data. Copying and pasting into ChatGPT worked for small batches, but anything over a few hundred items became a nightmare. So I built something better.
+Before this, I had put together a topic modeling script using the BERTopic library to help with customer feedback analysis. It worked, but once LLMs became accessible at scale, I knew I could do better. In June 2024, I started working on this with [Rohit Kumar Pandey](https://github.com/rkpande) to replace the topic modeling approach with LLM-powered analysis. The version you see now is a much more refined version of what we built back then. If you're curious about the earlier state of things, check the `deprecated/` folder in this repo.
 
 ---
 
