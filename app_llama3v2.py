@@ -522,6 +522,42 @@ def display_trend_analysis(datasets, provider, model):
 
 
 # ============================================================================
+# Authentication
+# ============================================================================
+
+def check_password():
+    """Returns True if the user entered the correct password."""
+    # Check if password is configured in secrets
+    try:
+        app_password = st.secrets.get("APP_PASSWORD", "")
+    except:
+        app_password = ""
+    
+    # If no password configured, allow access (for local development)
+    if not app_password:
+        return True
+    
+    # Check if already authenticated
+    if st.session_state.get("password_correct", False):
+        return True
+    
+    # Show password form
+    st.title("🔐 Feedback Analysis Tool")
+    st.markdown("This app is password protected.")
+    
+    password = st.text_input("Enter password to continue", type="password")
+    
+    if password:
+        if password == app_password:
+            st.session_state.password_correct = True
+            st.rerun()
+        else:
+            st.error("❌ Incorrect password. Please try again.")
+    
+    return False
+
+
+# ============================================================================
 # Main Application
 # ============================================================================
 
@@ -531,6 +567,10 @@ def main():
         page_icon="📊",
         layout="wide"
     )
+    
+    # Check password before showing app
+    if not check_password():
+        st.stop()
     
     st.title("📊 Feedback Analysis Tool")
     st.markdown("*AI-powered customer feedback analysis with actionable insights*")
