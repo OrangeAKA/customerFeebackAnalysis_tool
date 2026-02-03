@@ -2,6 +2,10 @@
 
 A tool I built to help product teams make sense of customer feedback at scale. Instead of manually reading through thousands of app reviews, support tickets, and NPS comments, you upload a CSV and get back structured insights with sentiment, categories, and priority tags.
 
+**Try it live:** [akhil-customerfeedbackanalysis-tool.streamlit.app](https://akhil-customerfeedbackanalysis-tool.streamlit.app/)
+
+It will prompt you for a password. If you weren't already given one and want to try it out, DM me on X [@akrishnaakhil](https://x.com/akrishnaakhil).
+
 Started this project in June 2024 when I was frustrated with how long it took to analyze feedback data. Copying and pasting into ChatGPT worked for small batches, but anything over a few hundred items became a nightmare. So I built something better.
 
 ---
@@ -281,7 +285,7 @@ flowchart TB
 
 ### Streamlit Cloud
 
-The app is deployed at: [Your Streamlit Cloud URL]
+The app is deployed at: [akhil-customerfeedbackanalysis-tool.streamlit.app](https://akhil-customerfeedbackanalysis-tool.streamlit.app/)
 
 ### Running Locally
 
