@@ -1,48 +1,66 @@
 # Feedback Analysis Tool
 
-A Streamlit-based tool for analyzing customer feedback and product support tickets using LLMs. Supports both local (Ollama) and cloud-based (Groq) language models.
+AI-powered customer feedback analysis with actionable insights for Product Managers and Operations teams.
 
 ## Features
 
-- **Customer Feedback Analysis**: Extract top feature requests, most loved features, main complaints, and competitor mentions
-- **Support Ticket Analysis**: Identify critical issues, looming issues, and potential fixes
-- **Multiple LLM Providers**: Choose between local Ollama or cloud-based Groq
-- **File Support**: Upload CSV or Excel (.xlsx) files for analysis
+### Core Analysis
+- **Row-Level Tagging**: Each feedback item is automatically tagged with:
+  - Category (feature request, bug report, complaint, praise, etc.)
+  - Sentiment (positive, negative, neutral)
+  - Priority (high, medium, low)
+  - One-sentence summary
 
-## Setup
+### Visual Dashboard
+- Category breakdown (pie chart)
+- Sentiment distribution (bar chart)
+- Priority matrix
+- Interactive data table with filtering
 
-### 1. Clone the repository
+### Executive Summary
+- Key metrics at a glance
+- Top findings with specific numbers
+- AI-generated actionable recommendations
+- High-priority items highlighted
+
+### Trend Analysis
+- Upload multiple datasets to compare over time
+- Category trends visualization
+- Sentiment trends over periods
+- Period-over-period delta indicators
+
+### Export Options
+- Tagged data as CSV
+- Structured JSON export
+- Markdown report for sharing
+
+### LLM Providers
+- **Groq (Cloud)**: Fast inference with DeepSeek and Llama models
+- **Ollama (Local)**: Privacy-focused, runs on your machine
+
+## Quick Start
+
+### Option 1: Streamlit Cloud (Recommended)
+
+The app is deployed at: [Your Streamlit Cloud URL]
+
+### Option 2: Local Setup
 
 ```bash
-git clone <your-repo-url>
-cd feedback-analysis
-```
+# Clone the repository
+git clone https://github.com/OrangeAKA/customerFeebackAnalysis_tool.git
+cd customerFeebackAnalysis_tool
 
-### 2. Create environment file
+# Create environment file
+cp .env.example .env
+# Edit .env and add your GROQ_API_KEY
 
-Create a `.env` file in the project root:
-
-```bash
-# For Groq (cloud) - get your key at https://console.groq.com
-GROQ_API_KEY=your_groq_api_key_here
-
-# Optional: For OpenAI (legacy, not currently used)
-OPENAI_API_KEY=your_openai_api_key_here
-```
-
-### 3. Run the setup script
-
-```bash
+# Run setup script
 chmod +x setup.sh
 ./setup.sh
 ```
 
-This will:
-- Create a virtual environment (if not exists)
-- Install dependencies
-- Start the Streamlit app
-
-### Manual Setup (Alternative)
+### Option 3: Manual Setup
 
 ```bash
 python3 -m venv venv
@@ -51,56 +69,96 @@ pip install -r requirements.txt
 streamlit run app_llama3v2.py
 ```
 
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file:
+
+```bash
+# Required for Groq (cloud) provider
+GROQ_API_KEY=your_groq_api_key_here
+
+# Optional
+OPENAI_API_KEY=your_openai_api_key_here
+```
+
+Get your Groq API key at [console.groq.com](https://console.groq.com)
+
+### Streamlit Cloud Deployment
+
+1. Fork/clone this repo to your GitHub
+2. Go to [share.streamlit.io](https://share.streamlit.io)
+3. Deploy from your GitHub repo
+4. Add `GROQ_API_KEY` in Settings > Secrets
+
 ## Usage
 
-1. Select your LLM provider in the sidebar:
-   - **Local (Ollama)**: Requires Ollama running locally with a model installed
-   - **Groq (Cloud)**: Requires GROQ_API_KEY in your .env file
+### Single Analysis Mode
 
-2. Choose the analysis type:
-   - Customer Feedback Data
-   - Product Support Tickets
-
-3. Upload your CSV or Excel file
-
-4. Select which columns to include in the analysis
-
+1. Select "Single Analysis" mode
+2. Choose your LLM provider and model
+3. Upload a CSV or Excel file with feedback data
+4. Select the column containing feedback text
 5. Click "Run Analysis"
+6. Explore results in the tabs:
+   - Executive Summary
+   - Visual Dashboard
+   - Tagged Data (with filters)
+   - Export
 
-## LLM Options
+### Trend Analysis Mode
 
-### Ollama (Local)
-- Free, runs on your machine
-- Requires [Ollama](https://ollama.ai) installed
-- Default model: `llama3` (configurable in sidebar)
-- Data stays on your machine
+1. Select "Trend Analysis" mode
+2. Upload 2+ datasets representing different time periods
+3. Label each time period
+4. Click "Run Trend Analysis"
+5. View category and sentiment trends over time
+
+## Supported Models
 
 ### Groq (Cloud)
-- Fast inference, requires API key
-- Available models: llama-3.1-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768
-- Get your API key at [console.groq.com](https://console.groq.com)
+| Model | Best For |
+|-------|----------|
+| deepseek-r1-distill-llama-70b | Highest quality reasoning |
+| deepseek-r1-distill-qwen-32b | Good balance of speed/quality |
+| llama-3.3-70b-versatile | General purpose |
+| llama-3.1-8b-instant | Fast, lower quality |
+
+### Ollama (Local)
+Any model installed locally (llama3, mistral, etc.)
 
 ## Project Structure
 
 ```
-├── app_llama3v2.py     # Main app (recommended)
-├── app_llama.py        # Alternative Ollama-only app
-├── llama3app_cfa.py    # CFA variant app
-├── config.py           # Configuration loader
-├── requirements.txt    # Python dependencies
-├── setup.sh            # Setup and run script
-└── .env                # Your API keys (not in repo)
+├── app_llama3v2.py          # Main application
+├── config.py                # Configuration loader
+├── requirements.txt         # Python dependencies
+├── setup.sh                 # Setup and run script
+├── .streamlit/
+│   └── secrets.toml.example # Secrets template for deployment
+├── deprecated/              # Legacy app versions
+│   ├── app_llama.py
+│   ├── llama3app_cfa.py
+│   └── README.md
+└── README.md
 ```
 
 ## Requirements
 
 - Python 3.9+
-- For local LLM: [Ollama](https://ollama.ai) with a model installed
 - For cloud LLM: Groq API key
+- For local LLM: [Ollama](https://ollama.ai) installed
 
 ## History
 
-This project was originally created in June 2024 for analyzing customer feedback using local LLMs. It has since been updated to support cloud-based LLM providers (Groq) for faster inference.
+This project was originally created in June 2024 for analyzing customer feedback using local LLMs. It has since been enhanced with:
+- Cloud-based LLM support (Groq)
+- Row-level tagging and categorization
+- Visual dashboards
+- Executive summaries with AI recommendations
+- Trend analysis across time periods
+- Export functionality
 
 ## License
 

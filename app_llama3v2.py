@@ -1,17 +1,30 @@
 import streamlit as st
 import pandas as pd
+import json
 import ollama
 import config
+from datetime import datetime
 
-# Try to import groq, but make it optional
+# Try to import groq and plotly
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
 except ImportError:
     GROQ_AVAILABLE = False
 
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
 
-def llm_chat(messages, provider="ollama", model=None):
+
+# ============================================================================
+# LLM Functions
+# ============================================================================
+
+def llm_chat(messages, provider="ollama", model=None, json_mode=False):
     """
     Unified LLM chat function that supports multiple providers.
     
@@ -19,13 +32,17 @@ def llm_chat(messages, provider="ollama", model=None):
         messages: List of message dicts with 'role' and 'content'
         provider: 'ollama' or 'groq'
         model: Model name (defaults vary by provider)
+        json_mode: If True, request JSON response format
     
     Returns:
         Response text from the LLM
     """
     if provider == "ollama":
         model = model or "llama3"
-        response = ollama.chat(model=model, messages=messages)
+        kwargs = {"model": model, "messages": messages}
+        if json_mode:
+            kwargs["format"] = "json"
+        response = ollama.chat(**kwargs)
         return response['message']['content']
     
     elif provider == "groq":
@@ -38,15 +55,21 @@ def llm_chat(messages, provider="ollama", model=None):
         
         model = model or "llama-3.1-70b-versatile"
         client = Groq(api_key=api_key)
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages
-        )
+        
+        kwargs = {"model": model, "messages": messages}
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        
+        response = client.chat.completions.create(**kwargs)
         return response.choices[0].message.content
     
     else:
         raise ValueError(f"Unknown provider: {provider}. Use 'ollama' or 'groq'.")
 
+
+# ============================================================================
+# Data Processing Functions
+# ============================================================================
 
 def read_file(file):
     """Read CSV or Excel file and handle header detection."""
@@ -59,7 +82,7 @@ def read_file(file):
         return None
     
     # Check for missing headers or empty rows at the start
-    if df.iloc[0].isnull().all():
+    if len(df) > 0 and df.iloc[0].isnull().all():
         df.columns = df.iloc[1]
         df = df[2:]
     elif df.columns.isnull().all():
@@ -70,154 +93,727 @@ def read_file(file):
     return df
 
 
-def analyze_data(data, selected_columns, analysis_type, provider, model):
-    """Analyze data using the selected LLM provider."""
-    combined_text = " ".join(data[selected_columns].astype(str).apply(lambda x: ' '.join(x), axis=1))
+def tag_single_row(text, analysis_type, provider, model):
+    """Tag a single feedback row with category, sentiment, and priority."""
     
     if analysis_type == "Customer Feedback Data":
-        prompt = (
-            f"Analyze the following customer feedback and extract the following information:\n"
-            f"1. Top feature requests\n"
-            f"2. Most loved features\n"
-            f"3. Main complaints\n"
-            f"4. Competitor mentions\n\n"
-            f"Customer feedback:\n{combined_text}"
-        )
+        categories = "feature_request, bug_report, complaint, praise, question, suggestion, other"
     else:
-        prompt = (
-            f"Analyze the following product support tickets and extract the following information:\n"
-            f"1. Critical issues\n"
-            f"2. Looming issues\n"
-            f"3. Potential fixes for issues\n\n"
-            f"Support tickets:\n{combined_text}"
-        )
+        categories = "critical_bug, performance_issue, usability_issue, feature_request, documentation, other"
     
+    prompt = f"""Analyze this feedback and return a JSON object with these exact fields:
+{{
+    "category": "one of: {categories}",
+    "sentiment": "positive, negative, or neutral",
+    "priority": "high, medium, or low",
+    "summary": "one sentence summary of the key point"
+}}
+
+Feedback to analyze:
+"{text}"
+
+Return ONLY the JSON object, no other text."""
+
     messages = [
-        {"role": "system", "content": "You are an expert data analyst."},
+        {"role": "system", "content": "You are a feedback analyst. Always respond with valid JSON only."},
         {"role": "user", "content": prompt}
     ]
+    
+    try:
+        response = llm_chat(messages, provider=provider, model=model, json_mode=True)
+        # Try to parse JSON
+        result = json.loads(response)
+        return result
+    except json.JSONDecodeError:
+        # Try to extract JSON from response
+        try:
+            start = response.find('{')
+            end = response.rfind('}') + 1
+            if start != -1 and end > start:
+                result = json.loads(response[start:end])
+                return result
+        except:
+            pass
+        # Return default values if parsing fails
+        return {
+            "category": "other",
+            "sentiment": "neutral", 
+            "priority": "medium",
+            "summary": text[:100] + "..." if len(text) > 100 else text
+        }
+    except Exception as e:
+        return {
+            "category": "error",
+            "sentiment": "neutral",
+            "priority": "medium", 
+            "summary": f"Error: {str(e)[:50]}"
+        }
 
+
+def tag_feedback_rows(df, text_column, analysis_type, provider, model, progress_callback=None):
+    """Tag each row in the dataframe with category, sentiment, and priority."""
+    tagged_data = []
+    total_rows = len(df)
+    
+    for idx, row in df.iterrows():
+        text = str(row[text_column])
+        
+        # Skip empty rows
+        if not text.strip() or text.lower() == 'nan':
+            tags = {
+                "category": "empty",
+                "sentiment": "neutral",
+                "priority": "low",
+                "summary": "Empty feedback"
+            }
+        else:
+            tags = tag_single_row(text, analysis_type, provider, model)
+        
+        # Combine original row with tags
+        tagged_row = row.to_dict()
+        tagged_row.update({
+            "_category": tags.get("category", "other"),
+            "_sentiment": tags.get("sentiment", "neutral"),
+            "_priority": tags.get("priority", "medium"),
+            "_summary": tags.get("summary", "")
+        })
+        tagged_data.append(tagged_row)
+        
+        # Update progress
+        if progress_callback:
+            progress_callback((idx + 1) / total_rows)
+    
+    return pd.DataFrame(tagged_data)
+
+
+# ============================================================================
+# Visualization Functions
+# ============================================================================
+
+def display_visualizations(tagged_df):
+    """Display visual charts for the tagged data."""
+    if not PLOTLY_AVAILABLE:
+        st.warning("Plotly not installed. Install with: pip install plotly")
+        return
+    
+    st.subheader("Visual Dashboard")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Category breakdown
+        category_counts = tagged_df['_category'].value_counts()
+        fig_cat = px.pie(
+            values=category_counts.values,
+            names=category_counts.index,
+            title="Feedback by Category",
+            hole=0.4
+        )
+        fig_cat.update_traces(textposition='inside', textinfo='percent+label')
+        st.plotly_chart(fig_cat, use_container_width=True)
+    
+    with col2:
+        # Sentiment distribution
+        sentiment_counts = tagged_df['_sentiment'].value_counts()
+        colors = {'positive': '#2ecc71', 'neutral': '#95a5a6', 'negative': '#e74c3c'}
+        fig_sent = px.bar(
+            x=sentiment_counts.index,
+            y=sentiment_counts.values,
+            title="Sentiment Distribution",
+            color=sentiment_counts.index,
+            color_discrete_map=colors
+        )
+        fig_sent.update_layout(showlegend=False, xaxis_title="Sentiment", yaxis_title="Count")
+        st.plotly_chart(fig_sent, use_container_width=True)
+    
+    # Priority breakdown
+    priority_counts = tagged_df['_priority'].value_counts()
+    priority_order = ['high', 'medium', 'low']
+    priority_counts = priority_counts.reindex([p for p in priority_order if p in priority_counts.index])
+    
+    colors_priority = {'high': '#e74c3c', 'medium': '#f39c12', 'low': '#3498db'}
+    fig_priority = px.bar(
+        x=priority_counts.index,
+        y=priority_counts.values,
+        title="Priority Distribution",
+        color=priority_counts.index,
+        color_discrete_map=colors_priority
+    )
+    fig_priority.update_layout(showlegend=False, xaxis_title="Priority", yaxis_title="Count")
+    st.plotly_chart(fig_priority, use_container_width=True)
+
+
+# ============================================================================
+# Executive Summary Functions
+# ============================================================================
+
+def generate_executive_summary(tagged_df):
+    """Generate statistics for executive summary."""
+    total = len(tagged_df)
+    
+    # Filter out empty/error categories
+    valid_df = tagged_df[~tagged_df['_category'].isin(['empty', 'error'])]
+    
+    # Category breakdown
+    categories = valid_df['_category'].value_counts()
+    top_category = categories.index[0] if len(categories) > 0 else "N/A"
+    top_category_count = categories.iloc[0] if len(categories) > 0 else 0
+    
+    # Sentiment breakdown
+    sentiment = valid_df['_sentiment'].value_counts()
+    negative_count = sentiment.get('negative', 0)
+    positive_count = sentiment.get('positive', 0)
+    negative_pct = (negative_count / len(valid_df) * 100) if len(valid_df) > 0 else 0
+    positive_pct = (positive_count / len(valid_df) * 100) if len(valid_df) > 0 else 0
+    
+    # Priority items
+    high_priority = valid_df[valid_df['_priority'] == 'high']
+    
+    return {
+        'total_items': total,
+        'valid_items': len(valid_df),
+        'top_category': top_category,
+        'top_category_count': top_category_count,
+        'negative_pct': negative_pct,
+        'positive_pct': positive_pct,
+        'negative_count': negative_count,
+        'positive_count': positive_count,
+        'high_priority_count': len(high_priority),
+        'high_priority_items': high_priority['_summary'].tolist()[:5],
+        'categories': categories.to_dict(),
+        'sentiments': sentiment.to_dict()
+    }
+
+
+def display_executive_summary(summary, tagged_df, provider, model):
+    """Display the executive summary."""
+    st.subheader("Executive Summary")
+    
+    # Key metrics
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Feedback", summary['total_items'])
+    col2.metric("Negative Sentiment", f"{summary['negative_pct']:.1f}%", 
+                delta=None if summary['negative_pct'] < 30 else "High", 
+                delta_color="inverse")
+    col3.metric("Positive Sentiment", f"{summary['positive_pct']:.1f}%")
+    col4.metric("High Priority", summary['high_priority_count'],
+                delta="Needs attention" if summary['high_priority_count'] > 0 else None,
+                delta_color="inverse")
+    
+    st.markdown("---")
+    
+    # Key findings
+    st.markdown("### Key Findings")
+    st.markdown(f"""
+- **Top Issue Category**: {summary['top_category'].replace('_', ' ').title()} ({summary['top_category_count']} mentions)
+- **Sentiment Breakdown**: {summary['positive_pct']:.1f}% positive, {summary['negative_pct']:.1f}% negative
+- **Items Requiring Attention**: {summary['high_priority_count']} high-priority items identified
+    """)
+    
+    # High priority items
+    if summary['high_priority_items']:
+        st.markdown("### Top High-Priority Items")
+        for i, item in enumerate(summary['high_priority_items'], 1):
+            st.markdown(f"{i}. {item}")
+    
+    # Generate recommendations
+    st.markdown("---")
+    st.markdown("### Recommended Actions")
+    
+    with st.spinner("Generating recommendations..."):
+        recommendations = generate_recommendations(summary, tagged_df, provider, model)
+        st.markdown(recommendations)
+
+
+def generate_recommendations(summary, tagged_df, provider, model):
+    """Use LLM to generate actionable recommendations."""
+    high_priority_text = "\n".join([f"- {item}" for item in summary['high_priority_items'][:10]])
+    categories_text = "\n".join([f"- {k}: {v}" for k, v in summary['categories'].items()])
+    
+    prompt = f"""Based on this customer feedback analysis, provide 3-5 specific, actionable recommendations for the product team.
+
+Analysis Summary:
+- Total feedback items: {summary['total_items']}
+- Top category: {summary['top_category']} ({summary['top_category_count']} mentions)
+- Sentiment: {summary['positive_pct']:.1f}% positive, {summary['negative_pct']:.1f}% negative
+- High priority items: {summary['high_priority_count']}
+
+Category Breakdown:
+{categories_text}
+
+High Priority Items:
+{high_priority_text if high_priority_text else "None identified"}
+
+Provide specific, actionable recommendations. Format as a numbered list. Be concise but specific."""
+
+    messages = [
+        {"role": "system", "content": "You are a senior product manager providing actionable recommendations based on customer feedback analysis."},
+        {"role": "user", "content": prompt}
+    ]
+    
     try:
         response = llm_chat(messages, provider=provider, model=model)
-        if response:
-            return response.strip()
+        return response
     except Exception as e:
-        st.error(f"Error calling LLM: {str(e)}")
-    return None
+        return f"Unable to generate recommendations: {str(e)}"
 
 
-def extract_section(text, section_title):
-    """Extract a section from the analysis text based on title."""
-    lines = text.split('\n')
-    start_index = next((i for i, line in enumerate(lines) if section_title.lower() in line.lower()), None)
-    if start_index is None:
-        return "No data found"
+# ============================================================================
+# Export Functions
+# ============================================================================
+
+def get_export_data(tagged_df, summary):
+    """Prepare data for export."""
+    # CSV export
+    csv = tagged_df.to_csv(index=False)
     
-    end_index = next(
-        (i for i, line in enumerate(lines[start_index + 1:], start=start_index + 1) if line.strip() == ""),
-        len(lines)
-    )
-    return "\n".join(lines[start_index + 1:end_index]).strip()
-
-
-def display_analysis(analysis_text, analysis_type):
-    """Display the analysis results."""
-    st.text_area("Full Analysis", value=analysis_text, height=300)
-
-    if analysis_type == "Customer Feedback Data":
-        st.subheader("Top Feature Requests")
-        st.text_area("Top Feature Requests", value=extract_section(analysis_text, "Top feature requests"), height=150)
-
-        st.subheader("Most Loved Features")
-        st.text_area("Most Loved Features", value=extract_section(analysis_text, "Most loved features"), height=150)
-
-        st.subheader("Main Complaints")
-        st.text_area("Main Complaints", value=extract_section(analysis_text, "Main complaints"), height=150)
-
-        st.subheader("Competitor Mentions")
-        st.text_area("Competitor Mentions", value=extract_section(analysis_text, "Competitor mentions"), height=150)
+    # JSON export
+    json_data = tagged_df.to_json(orient='records', indent=2)
     
-    elif analysis_type == "Product Support Tickets":
-        st.subheader("Critical Issues")
-        st.text_area("Critical Issues", value=extract_section(analysis_text, "Critical issues"), height=150)
+    # Markdown report
+    report_md = f"""# Feedback Analysis Report
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 
-        st.subheader("Looming Issues")
-        st.text_area("Looming Issues", value=extract_section(analysis_text, "Looming issues"), height=150)
+## Executive Summary
 
-        st.subheader("Potential Fixes")
-        st.text_area("Potential Fixes", value=extract_section(analysis_text, "Potential fixes"), height=150)
+| Metric | Value |
+|--------|-------|
+| Total Feedback Items | {summary['total_items']} |
+| Positive Sentiment | {summary['positive_pct']:.1f}% |
+| Negative Sentiment | {summary['negative_pct']:.1f}% |
+| High Priority Items | {summary['high_priority_count']} |
+
+## Category Breakdown
+
+| Category | Count |
+|----------|-------|
+"""
+    for cat, count in summary['categories'].items():
+        report_md += f"| {cat.replace('_', ' ').title()} | {count} |\n"
+    
+    report_md += f"""
+## High Priority Items
+
+"""
+    for i, item in enumerate(summary['high_priority_items'], 1):
+        report_md += f"{i}. {item}\n"
+    
+    return csv, json_data, report_md
 
 
-# Streamlit UI
-st.title("Feedback and Support Ticket Analysis Tool")
+# ============================================================================
+# Trend Analysis Functions
+# ============================================================================
 
-# Sidebar for LLM configuration
-st.sidebar.header("LLM Configuration")
-
-# Provider selection
-provider_options = ["Local (Ollama)"]
-if GROQ_AVAILABLE and config.GROQ_API_KEY:
-    provider_options.append("Groq (Cloud)")
-
-provider_display = st.sidebar.selectbox(
-    "Select LLM Provider",
-    provider_options,
-    help="Choose between local Ollama or cloud-based Groq"
-)
-
-# Map display name to internal provider name
-provider = "ollama" if "Ollama" in provider_display else "groq"
-
-# Model selection based on provider
-if provider == "ollama":
-    model = st.sidebar.text_input(
-        "Ollama Model",
-        value="llama3",
-        help="Enter the name of your local Ollama model (e.g., llama3, mistral, codellama)"
+def display_trend_analysis(datasets, provider, model):
+    """Display trend analysis comparing multiple datasets."""
+    if not PLOTLY_AVAILABLE:
+        st.warning("Plotly not installed. Install with: pip install plotly")
+        return
+    
+    st.subheader("📈 Trend Analysis")
+    
+    # Combine all summaries
+    trend_data = []
+    for name, summary in datasets.items():
+        for category, count in summary['categories'].items():
+            trend_data.append({
+                'Period': name,
+                'Category': category.replace('_', ' ').title(),
+                'Count': count
+            })
+    
+    if not trend_data:
+        st.warning("No data available for trend analysis")
+        return
+    
+    trend_df = pd.DataFrame(trend_data)
+    
+    # Category trends
+    st.markdown("### Category Trends Over Time")
+    fig = px.line(
+        trend_df, 
+        x='Period', 
+        y='Count', 
+        color='Category',
+        markers=True,
+        title="Feedback Categories by Period"
     )
-else:
-    groq_models = [
-        "llama-3.1-70b-versatile",
-        "llama-3.1-8b-instant",
-        "llama3-70b-8192",
-        "llama3-8b-8192",
-        "mixtral-8x7b-32768"
-    ]
-    model = st.sidebar.selectbox(
-        "Groq Model",
-        groq_models,
-        help="Select a Groq model"
+    fig.update_layout(xaxis_title="Time Period", yaxis_title="Count")
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Sentiment trends
+    sentiment_data = []
+    for name, summary in datasets.items():
+        sentiment_data.append({
+            'Period': name,
+            'Positive %': summary['positive_pct'],
+            'Negative %': summary['negative_pct']
+        })
+    
+    sentiment_df = pd.DataFrame(sentiment_data)
+    
+    st.markdown("### Sentiment Trends Over Time")
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(
+        x=sentiment_df['Period'], 
+        y=sentiment_df['Positive %'],
+        name='Positive',
+        line=dict(color='#2ecc71'),
+        mode='lines+markers'
+    ))
+    fig2.add_trace(go.Scatter(
+        x=sentiment_df['Period'], 
+        y=sentiment_df['Negative %'],
+        name='Negative',
+        line=dict(color='#e74c3c'),
+        mode='lines+markers'
+    ))
+    fig2.update_layout(
+        title="Sentiment Trends",
+        xaxis_title="Time Period",
+        yaxis_title="Percentage",
+        yaxis=dict(range=[0, 100])
     )
-
-# Show provider status
-if provider == "ollama":
-    st.sidebar.info("Using local Ollama. Make sure Ollama is running.")
-else:
-    st.sidebar.success("Using Groq cloud API.")
-
-# Main content
-file_type = st.radio("Select file type", ["Customer Feedback Data", "Product Support Tickets"])
-
-uploaded_file = st.file_uploader("Upload Dataset", type=["csv", "xlsx"])
-
-if uploaded_file:
-    df = read_file(uploaded_file)
-    if df is not None:
-        st.write("Dataset Preview:", df.head())
-
-        all_columns = df.columns.tolist()
-        selected_columns = st.multiselect(
-            "Select columns to include in analysis",
-            all_columns,
-            default=all_columns
+    st.plotly_chart(fig2, use_container_width=True)
+    
+    # Delta indicators
+    st.markdown("### Period-over-Period Changes")
+    if len(datasets) >= 2:
+        periods = list(datasets.keys())
+        latest = datasets[periods[-1]]
+        previous = datasets[periods[-2]]
+        
+        col1, col2, col3 = st.columns(3)
+        
+        # Calculate deltas
+        neg_delta = latest['negative_pct'] - previous['negative_pct']
+        pos_delta = latest['positive_pct'] - previous['positive_pct']
+        high_pri_delta = latest['high_priority_count'] - previous['high_priority_count']
+        
+        col1.metric(
+            "Negative Sentiment", 
+            f"{latest['negative_pct']:.1f}%",
+            f"{neg_delta:+.1f}%",
+            delta_color="inverse"
         )
+        col2.metric(
+            "Positive Sentiment",
+            f"{latest['positive_pct']:.1f}%", 
+            f"{pos_delta:+.1f}%"
+        )
+        col3.metric(
+            "High Priority Items",
+            latest['high_priority_count'],
+            f"{high_pri_delta:+d}",
+            delta_color="inverse"
+        )
+        
+        # Summary
+        st.markdown("---")
+        st.markdown(f"""
+**Key Changes ({periods[-2]} → {periods[-1]}):**
+- Negative sentiment {"increased" if neg_delta > 0 else "decreased"} by {abs(neg_delta):.1f}%
+- Positive sentiment {"increased" if pos_delta > 0 else "decreased"} by {abs(pos_delta):.1f}%
+- High priority items {"increased" if high_pri_delta > 0 else "decreased"} by {abs(high_pri_delta)}
+        """)
+    else:
+        st.info("Upload at least 2 datasets to see period-over-period changes")
 
-        if st.button("Run Analysis"):
-            with st.spinner(f"Running analysis using {provider_display}..."):
-                analysis_text = analyze_data(df, selected_columns, file_type, provider, model)
+
+# ============================================================================
+# Main Application
+# ============================================================================
+
+def main():
+    st.set_page_config(
+        page_title="Feedback Analysis Tool",
+        page_icon="📊",
+        layout="wide"
+    )
+    
+    st.title("📊 Feedback Analysis Tool")
+    st.markdown("*AI-powered customer feedback analysis with actionable insights*")
+    
+    # Sidebar for LLM configuration
+    st.sidebar.header("⚙️ Configuration")
+    
+    # Provider selection
+    provider_options = ["Local (Ollama)"]
+    if GROQ_AVAILABLE and config.GROQ_API_KEY:
+        provider_options.insert(0, "Groq (Cloud)")  # Prefer Groq if available
+    
+    provider_display = st.sidebar.selectbox(
+        "LLM Provider",
+        provider_options,
+        help="Choose between local Ollama or cloud-based Groq"
+    )
+    
+    provider = "ollama" if "Ollama" in provider_display else "groq"
+    
+    # Model selection
+    if provider == "ollama":
+        model = st.sidebar.text_input(
+            "Ollama Model",
+            value="llama3",
+            help="Enter your local Ollama model name"
+        )
+        st.sidebar.info("🖥️ Using local Ollama. Ensure Ollama is running.")
+    else:
+        groq_models = [
+            "deepseek-r1-distill-llama-70b",
+            "deepseek-r1-distill-qwen-32b",
+            "llama-3.3-70b-versatile",
+            "llama-3.1-70b-versatile",
+            "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768",
+        ]
+        model = st.sidebar.selectbox(
+            "Groq Model",
+            groq_models,
+            help="DeepSeek models recommended for best analysis quality"
+        )
+        st.sidebar.success("☁️ Using Groq cloud API")
+    
+    st.sidebar.markdown("---")
+    
+    # Analysis mode
+    analysis_mode = st.sidebar.radio(
+        "Mode",
+        ["Single Analysis", "Trend Analysis"],
+        help="Single: Analyze one dataset. Trend: Compare multiple datasets over time."
+    )
+    
+    # Analysis type
+    analysis_type = st.sidebar.radio(
+        "Data Type",
+        ["Customer Feedback Data", "Product Support Tickets"]
+    )
+    
+    # Main content
+    st.markdown("---")
+    
+    if analysis_mode == "Trend Analysis":
+        # Multi-file upload for trend analysis
+        st.subheader("📈 Trend Analysis Mode")
+        st.markdown("Upload multiple datasets to compare feedback trends over time.")
+        
+        uploaded_files = st.file_uploader(
+            "📁 Upload multiple datasets (CSV or Excel)",
+            type=["csv", "xlsx"],
+            accept_multiple_files=True,
+            help="Upload 2 or more files representing different time periods"
+        )
+        
+        if uploaded_files and len(uploaded_files) >= 2:
+            # Let user label each file with a period name
+            st.markdown("#### Label your time periods")
+            period_names = {}
+            text_columns = {}
             
-            if analysis_text:
-                st.success("Analysis completed!")
-                display_analysis(analysis_text, file_type)
-            else:
-                st.error("Analysis failed. Please check your LLM configuration.")
+            for i, file in enumerate(uploaded_files):
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    period_names[file.name] = st.text_input(
+                        f"Period label for {file.name}",
+                        value=f"Period {i+1}",
+                        key=f"period_{i}"
+                    )
+                with col2:
+                    temp_df = read_file(file)
+                    if temp_df is not None:
+                        text_columns[file.name] = st.selectbox(
+                            f"Text column for {file.name}",
+                            temp_df.columns.tolist(),
+                            key=f"col_{i}"
+                        )
+            
+            if st.button("🚀 Run Trend Analysis", type="primary", use_container_width=True):
+                all_summaries = {}
+                
+                progress_bar = st.progress(0)
+                
+                for i, file in enumerate(uploaded_files):
+                    file.seek(0)  # Reset file pointer
+                    df = read_file(file)
+                    
+                    if df is not None:
+                        st.info(f"Analyzing {period_names[file.name]}...")
+                        
+                        # Tag the data
+                        tagged_df = tag_feedback_rows(
+                            df, text_columns[file.name], analysis_type,
+                            provider, model,
+                            progress_callback=lambda p: progress_bar.progress((i + p) / len(uploaded_files))
+                        )
+                        
+                        # Generate summary
+                        summary = generate_executive_summary(tagged_df)
+                        all_summaries[period_names[file.name]] = summary
+                
+                progress_bar.progress(1.0)
+                st.success("Trend analysis complete!")
+                
+                # Display trend analysis
+                display_trend_analysis(all_summaries, provider, model)
+        
+        elif uploaded_files and len(uploaded_files) == 1:
+            st.warning("Please upload at least 2 files for trend analysis")
+        else:
+            st.info("Upload 2 or more CSV/Excel files to begin trend analysis")
+    
+    else:
+        # Single file upload
+        uploaded_file = st.file_uploader(
+            "📁 Upload your feedback data (CSV or Excel)",
+            type=["csv", "xlsx"],
+            help="Upload a file containing customer feedback or support tickets"
+        )
+    
+        if uploaded_file:
+            df = read_file(uploaded_file)
+            
+            if df is not None:
+                st.subheader("📋 Data Preview")
+                st.dataframe(df.head(10), use_container_width=True)
+                st.caption(f"Showing first 10 of {len(df)} rows")
+                
+                # Column selection
+                text_column = st.selectbox(
+                    "Select the column containing feedback text",
+                    df.columns.tolist(),
+                    help="Choose the column that contains the main feedback/ticket text"
+                )
+                
+                # Analysis button
+                if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
+                    
+                    # Check if already analyzed (in session state)
+                    cache_key = f"{uploaded_file.name}_{text_column}_{analysis_type}"
+                    
+                    if cache_key in st.session_state and st.session_state[cache_key] is not None:
+                        tagged_df = st.session_state[cache_key]
+                        st.info("Using cached results. Upload a new file to re-analyze.")
+                    else:
+                        # Progress bar
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        def update_progress(pct):
+                            progress_bar.progress(pct)
+                            status_text.text(f"Analyzing... {int(pct * 100)}% complete ({int(pct * len(df))}/{len(df)} rows)")
+                        
+                        status_text.text("Starting analysis...")
+                        
+                        try:
+                            tagged_df = tag_feedback_rows(
+                                df, text_column, analysis_type, 
+                                provider, model, 
+                                progress_callback=update_progress
+                            )
+                            
+                            # Cache results
+                            st.session_state[cache_key] = tagged_df
+                            
+                            progress_bar.progress(1.0)
+                            status_text.text("Analysis complete!")
+                            
+                        except Exception as e:
+                            st.error(f"Analysis failed: {str(e)}")
+                            return
+                    
+                    # Display results
+                    st.markdown("---")
+                    
+                    # Generate summary
+                    summary = generate_executive_summary(tagged_df)
+                    
+                    # Create tabs for different views
+                    tab1, tab2, tab3, tab4 = st.tabs([
+                        "📊 Executive Summary",
+                        "📈 Visual Dashboard", 
+                        "📋 Tagged Data",
+                        "📥 Export"
+                    ])
+                    
+                    with tab1:
+                        display_executive_summary(summary, tagged_df, provider, model)
+                    
+                    with tab2:
+                        display_visualizations(tagged_df)
+                    
+                    with tab3:
+                        st.subheader("Tagged Feedback Data")
+                        
+                        # Filters
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            filter_category = st.multiselect(
+                                "Filter by Category",
+                                tagged_df['_category'].unique().tolist(),
+                                default=tagged_df['_category'].unique().tolist()
+                            )
+                        with col2:
+                            filter_sentiment = st.multiselect(
+                                "Filter by Sentiment",
+                                tagged_df['_sentiment'].unique().tolist(),
+                                default=tagged_df['_sentiment'].unique().tolist()
+                            )
+                        with col3:
+                            filter_priority = st.multiselect(
+                                "Filter by Priority",
+                                tagged_df['_priority'].unique().tolist(),
+                                default=tagged_df['_priority'].unique().tolist()
+                            )
+                        
+                        # Apply filters
+                        filtered_df = tagged_df[
+                            (tagged_df['_category'].isin(filter_category)) &
+                            (tagged_df['_sentiment'].isin(filter_sentiment)) &
+                            (tagged_df['_priority'].isin(filter_priority))
+                        ]
+                        
+                        st.dataframe(filtered_df, use_container_width=True)
+                        st.caption(f"Showing {len(filtered_df)} of {len(tagged_df)} rows")
+                    
+                    with tab4:
+                        st.subheader("Export Data")
+                        
+                        csv, json_data, report_md = get_export_data(tagged_df, summary)
+                        
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.download_button(
+                                "📥 Download CSV",
+                                csv,
+                                "tagged_feedback.csv",
+                                "text/csv",
+                                use_container_width=True
+                            )
+                        
+                        with col2:
+                            st.download_button(
+                                "📥 Download JSON",
+                                json_data,
+                                "tagged_feedback.json",
+                                "application/json",
+                                use_container_width=True
+                            )
+                        
+                        with col3:
+                            st.download_button(
+                                "📥 Download Report (MD)",
+                                report_md,
+                                "feedback_report.md",
+                                "text/markdown",
+                                use_container_width=True
+                            )
+                        
+                        st.markdown("---")
+                        st.markdown("### Report Preview")
+                        st.markdown(report_md)
+
+
+if __name__ == "__main__":
+    main()

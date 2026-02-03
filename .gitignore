@@ -6,6 +6,9 @@ env/
 # Environment variables (contains API keys)
 .env
 
+# Streamlit secrets (contains API keys)
+.streamlit/secrets.toml
+
 # Python bytecode
 __pycache__/
 *.py[cod]
