@@ -257,8 +257,39 @@ Return ONLY a JSON array like: [{{"id": 0, "category": "...", "sentiment": "..."
         ]
 
 
+def build_analysis_text(row, text_column, context_columns=None):
+    """
+    Build the text to send to the LLM, optionally including context columns.
+    
+    Args:
+        row: DataFrame row
+        text_column: Main feedback text column name
+        context_columns: Optional list of additional context column names
+    
+    Returns:
+        Combined text string for analysis
+    """
+    feedback_text = str(row[text_column])
+    
+    if not context_columns:
+        return feedback_text
+    
+    # Build context section
+    context_parts = []
+    for col in context_columns:
+        val = str(row[col]) if pd.notna(row[col]) else ""
+        if val and val.lower() != 'nan':
+            context_parts.append(f"{col}: {val}")
+    
+    if context_parts:
+        context_str = "\n".join(context_parts)
+        return f"{context_str}\nFeedback: {feedback_text}"
+    else:
+        return feedback_text
+
+
 def tag_feedback_rows(df, text_column, analysis_type, provider, model, progress_callback=None, 
-                      batch_size=15, sample_size=None):
+                      batch_size=15, sample_size=None, context_columns=None):
     """
     Tag each row in the dataframe with category, sentiment, and priority.
     
@@ -271,6 +302,7 @@ def tag_feedback_rows(df, text_column, analysis_type, provider, model, progress_
         progress_callback: Optional callback for progress updates
         batch_size: Number of rows to process per API call (default: 15)
         sample_size: If set, randomly sample this many rows (default: None = all rows)
+        context_columns: Optional list of additional columns to include as context
     
     Returns:
         DataFrame with added tag columns
@@ -294,9 +326,9 @@ def tag_feedback_rows(df, text_column, analysis_type, provider, model, progress_
     
     for idx in sampled_indices:
         row = df.loc[idx]
-        text = str(row[text_column])
+        raw_text = str(row[text_column])
         
-        if not text.strip() or text.lower() == 'nan':
+        if not raw_text.strip() or raw_text.lower() == 'nan':
             empty_results[idx] = {
                 "category": "empty",
                 "sentiment": "neutral",
@@ -304,7 +336,9 @@ def tag_feedback_rows(df, text_column, analysis_type, provider, model, progress_
                 "summary": "Empty feedback"
             }
         else:
-            all_texts.append(text)
+            # Build the analysis text with optional context
+            analysis_text = build_analysis_text(row, text_column, context_columns)
+            all_texts.append(analysis_text)
             all_indices.append(idx)
     
     # Process in batches
@@ -897,6 +931,14 @@ def main():
                     help="Choose the column that contains the main feedback/ticket text"
                 )
                 
+                # Context columns (optional)
+                other_columns = [c for c in df.columns.tolist() if c != text_column]
+                context_columns = st.multiselect(
+                    "Optional: Add context columns",
+                    other_columns,
+                    help="These columns will be included in the prompt as extra context (e.g., user, plan, channel)"
+                )
+                
                 # Large dataset options
                 sample_size = None
                 total_rows = len(df)
@@ -945,7 +987,9 @@ def main():
                 if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
                     
                     # Check if already analyzed (in session state)
-                    cache_key = f"{uploaded_file.name}_{text_column}_{analysis_type}_{sample_size}"
+                    # Include all analysis parameters in cache key
+                    context_key = ",".join(sorted(context_columns)) if context_columns else ""
+                    cache_key = f"{uploaded_file.name}|{text_column}|{analysis_type}|{provider}|{model}|{sample_size}|{context_key}"
                     
                     if cache_key in st.session_state and st.session_state[cache_key] is not None:
                         tagged_df = st.session_state[cache_key]
@@ -971,7 +1015,8 @@ def main():
                                 provider, model, 
                                 progress_callback=update_progress,
                                 batch_size=15,
-                                sample_size=sample_size
+                                sample_size=sample_size,
+                                context_columns=context_columns
                             )
                             
                             # Cache results
